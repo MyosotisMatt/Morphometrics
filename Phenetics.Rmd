@@ -1,0 +1,752 @@
+---
+title: "Numerical Taxonomy"
+author: "Mathew Rees"
+date: "April 2023"
+output:
+  html_notebook:
+    number_sections: yes
+    code_folding: hide
+    df_print: paged
+    toc: yes
+    toc_depth: 4
+    toc_float:
+      collapsed: no
+---
+
+```{r klippy, echo=FALSE, include=TRUE}
+klippy::klippy(position = c("top", "right"))
+```
+
+In this notebook, I want to explore some common exploratory data analyses (EDA) that might be useful if we want to perform some morphometric analyses on a species complex or look at which characters are important to separate different groups.
+
+As a bit of background, I would like to revisit the concepts of Phenetics vs. Cladistics, focusing on the methodology that Phenetics has left us.
+
+First let's load the libraries necessary for this session.
+
+You can simply click on the `code` button to unfold the code, and click on the small "Copy" icon to copy all the code from a cell.
+
+```{r, message=FALSE, warning=FALSE, error=FALSE}
+# If you haven't already installed these packages, you can uncomment the following lines
+
+#packages <- c("tidyverse", "mclust", "NbClust", "ade4", "factoextra", "dendextend", "PerformanceAnalytics", "rpart", "rpart.plot", "MASS", "colorspace", "FD", "vegan", "missMDA")
+
+#new.packages <- packages[!(packages %in% installed.packages()[,"Package"])]
+
+#if(length(new.packages)) install.packages(new.packages)
+
+library(tidyverse)
+library(mclust)
+library(NbClust)
+library(ade4)
+library(factoextra)
+library(dendextend)
+library(PerformanceAnalytics)
+library(rpart)
+library(rpart.plot)
+library(MASS)
+library(colorspace)
+library(FD)
+library(vegan)
+library(missMDA)
+```
+
+# EDA
+
+We will be working with Ronald Fisher's classic iris dataset than comes inbuilt in R. So no need to download anything.
+
+First, let's have a look at the data.
+
+```{r}
+str(iris)
+```
+
+Great, so we have a dataframe with 5 columns and 150 rows.
+
+The dataset comes with a handy `Species` column, which indicates which row of data belongs to which species. In real life obviously we don't have that information. 
+That's the whole point of what we are trying to obtain!
+
+So let's get a sense of how these three species look like in terms of their characters.
+We will plot each character one by one and look at their distribution.
+
+```{r}
+for (i in list("Sepal.Length", "Sepal.Width", "Petal.Length", "Petal.Width")) {
+  
+p<-ggplot(iris, aes_string(x=i)) + 
+  geom_density(aes(fill=Species), alpha = 0.5) +
+  theme_classic()
+  
+print(p)  
+  
+}
+```
+
+Interesting. Some of the characters show more "gaps" than others. For example, Petal.Length and Petal.Width clearly show _I.setosa_ as being separate.
+
+In the early days, "gaps" were a central tenant of numerical taxonomy, also known as phenetics. If two groups (Species, Genus, Family, or whatever taxon you chose) were to be separated, they had to display a "gap" in their characteristics.
+
+For more info on Phenetics vs Cladistics, the work of Sneath and Sokal (1973) and Willi Hennig (1966 which is the english translated version of his 1950 work) are the foundation.
+
+But for now, back to our data.
+
+How are the variables related to each other?
+
+```{r}
+chart.Correlation(iris[,-5])
+```
+
+Petal Length and Petal width seem to be highly correlated with each other.
+
+Now we can make some scatter plots, looking at two characters plotted against each other.
+
+```{r}
+ggplot(iris) +
+  geom_point(aes(y=Sepal.Width, x=Petal.Width, col=Species)) +
+  theme_classic()
+```
+
+This is a pretty nice one. We can see that when looking at sepal width vs petal width, _I.setosa_ is clearly separate from the two other species.
+
+But what if we didn't have that `Species` information?
+
+```{r}
+ggplot(iris) +
+  geom_point(aes(y=Sepal.Width, x=Petal.Width)) +
+  theme_classic()
+```
+
+Would you still say there are three species? Or just two?
+
+That's where we will dive into the world of numerical taxonomy. Let's get started!
+
+
+--------------------------------------------------------------------------------
+
+# Principle Component Analysis (PCA)
+
+In the first scatter plot, we used only 2 characters, but what if we want to use all available characters? That would require us to be able to visualise the data in 4 dimension, given we have 4 variables.
+
+If we had even more characters to analyze, you can quickly see how difficult this becomes.
+
+We can do that by reducing the number of dimensions with an ordination, such as principal components analysis (PCA).
+More info on PCA in R [here](https://aedin.github.io/PCAworkshop/articles/b_PCA.html).
+
+The first thing to understand is the concept of scaling our data.
+In most datasets, each variable is different either by the unit measured (eg, distance vs count) or by the scale of the unit (eg. 10cm vs 100 cm.)
+
+We need to make sure all our variables are comparable to each other in terms of units and scale. In other words, we want to be able to compare apples with apples.
+
+Let's look at what this means with our data
+
+```{r}
+iris[,-5] %>% head()
+
+ggplot(iris) + 
+  geom_density(aes(x=Sepal.Length), col="red") + 
+  geom_density(aes(x=Petal.Width), col="blue")
+```
+
+
+We know that all our measurements use the same unit, ie. cm.
+But we can see that the first column (Sepal.Length) has values that are much larger than the fourth column (Petal.Width). 
+
+It would be great if we could make these two distributions overlap.
+
+Lets scale the data and have a look at the same first rows
+
+```{r}
+scaled.iris<-scale(iris[,-5]) %>% data.frame()
+scaled.iris$Species <- iris$Species
+head(scaled.iris)
+
+ggplot(scaled.iris) + 
+  geom_density(aes(x=Sepal.Length), col="red") + 
+  geom_density(aes(x=Petal.Width), col="blue")
+```
+
+We can see that `scale()` has preserved the shape of the data, but now we are able to compare the two variables because they are on the same scale. They have also been centered around 0.
+
+For more info on scaling and transforming your data to fit a normal distribution, see [this great tutorial by Matus Seci](https://ourcodingclub.github.io/tutorials/data-scaling/).
+
+Great, this is a prerequisite for running the PCA, all variables must be scaled and centered. Now we can continue with the analysis.
+
+```{r}
+## The dudi.pca function comes from the ade4 package
+pca.iris<-dudi.pca(iris[,-5], nf = 2, scannf = F, center = T, scale = T) # Note here that I am using center = T and scale = T, which is the same as if i had used the new `scaled.iris` object
+
+## Visualize the pca.iris object
+fviz_pca(pca.iris, habillage=iris$Species)
+```
+
+Nice. we can see the three species plotted in multidimensional space. This looks a lot like the scatterplot that we made using just those two variables.
+
+Again, we can see that _I.setosa_ clusters nicely away from the two other species. But we can also see that separating _I.virginica_ from _I.versicolor_ is not that straight forward. They seem to overlap a little. If we didn't have the `Species` label to help us decipher the plot, we might think there are only two groups.
+
+The first axis explaines 73% of the variation in the data and the second axis 22.9%. That's quite good, it means that we are capturing a high amount of information from all the variables in our dataset by representing them on only 2 axes.
+
+You can also see which variables contributed to which axes. For example Petal Length and Width are highly correlated and contribute most to the first axis. Sepal Width contributes the most to the second axis.
+
+Let's check this out visually with a scree plot and a contribution plot
+
+```{r}
+fviz_eig(pca.iris)
+
+fviz_contrib(pca.iris, "var", axes = 1)
+fviz_contrib(pca.iris, "var", axes = 2)
+```
+
+The scree plot shows you the percentage of variance explained by each Principal Component.
+The contribution plot shows you the percentage contribution of each variable to that specific principal component.
+
+You can also plot onto the ordination any environmental variables that you might have associated with each data point.
+
+Let's make up some random data. I will create a 150 x 4 matrix where the 4 columns correspond to "random" environmental variables that you might be using in your analyses.
+
+```{r}
+set.seed(123)
+env <- data.frame(matrix(nrow = 150, ncol = 4, dimnames = list(c(1:150),c("MAP", "Temp", "Seasonality", "MCWD"))))
+
+env$MAP <- c(rnorm(50, mean=20, sd=5), rnorm(50, mean=30, sd=5), rnorm(50, mean=40, sd=5))
+
+env$Temp <- env$MAP+rnorm(n = 150, mean = 10, sd=20)
+
+env$Seasonality <- c(rnorm(100, mean=40, sd=15), rnorm(50, mean=30, sd=5))
+
+env$MCWD <- c(rnorm(50, mean=40, sd=10), rnorm(100, mean=30, sd=10))
+```
+
+Let's just check how correlated these are
+
+```{r}
+cor(env)
+```
+
+Ok some correlation going on but not massive. Let's proceed to the fitting of these environmental variables.
+
+```{r}
+ef <- envfit (pca.iris$li, env, permutations = 999)
+ef
+```
+
+Seems like all 4 variables are significant in the model. you can see that MAP seems to be the variables explaining most variation in both PC1 and PC2, with an r^2 of 0.67. The numbers in the two PC columns are not correlation coefficients, but coordinates of the vector head.
+
+As [David Zeleny suggests](https://www.davidzeleny.net/anadat-r/doku.php/en:suppl_vars_examples), as the number of variables increases, we might want to implement a correction for multiple testing.
+
+```{r}
+ef.adj <- ef 
+pvals.adj <- p.adjust (ef$vectors$pvals, method = 'bonferroni')
+ef.adj$vectors$pvals <- pvals.adj
+ef.adj
+```
+
+Ok still all significant.
+You can either make a basic plot
+
+```{r}
+ordiplot(pca.iris)
+plot(ef)
+```
+
+Here the coordinates of the arrow heads are scaled to the r2 values.
+
+Or we can make a nicer plot.
+
+
+```{r}
+env.loadings <- data.frame(ef$vectors$arrows)
+
+fviz_pca(pca.iris, habillage=iris$Species) +
+  geom_segment(data=env.loadings, aes(x=0, y=0, xend=Axis1*ef$vectors$r*5, yend=Axis2*ef$vectors$r*5), arrow = arrow(length = unit(0.5, "cm"))) +
+  annotate("text", x = (env.loadings$Axis1*ef$vectors$r*5), y = (env.loadings$Axis2*2), label = rownames(env.loadings))
+```
+
+And extract the correlation coefficient of each environmental variable with each of the PC axes.
+
+```{r}
+scores.pca <- scores (pca.iris, display = 'sites', choices = 1:2)
+cor (env, scores.pca)
+
+```
+
+So if we wanted to fit a canonical model which takes into account the environmental variables, like a redundancy analysis (RDA), we might want to chose MAP and MCWD.
+
+--------------------------------------------------------------------------
+
+# Principle Coordinate Analysis and Non-Metric Multidimensional Scaling
+
+PCoA and NMDS are ordinations that use a distance matrix instead of using the original data. This is particularly useful if you have missing data or data matrices with mixed types of data (ie. numerical and categorical). 
+
+NMDS uses the ranked distance between observations rather than the absolute distance values. The algorithm is iterative as it reshuffles the samples in search of the best final distribution in the ordination, so each run may result in a slightly different solution.
+
+Calculating a distance matrix between your different samples can be easily done using the gower distance matrix. The `FD` packages implements a simple and fast function for this called `gowdis`. Let's use a dummy dataset with different types of data for you to get an idea.
+
+```{r}
+dummy.traits <- FD::dummy$trait
+
+head(dummy.traits)
+
+str(dummy.traits)
+
+paste("Number of missing values:", sum(is.na(dummy.traits)))
+```
+
+You can see we have an 8 x 8 matrix with different types of variables and some missing data.
+
+Now we will build the distance matrix using gower's distance.
+
+```{r}
+dist.test <- gowdis(dummy.traits) # Note you can also use the daisy() function from the `cluster` package
+
+class(dist.test)
+
+as.matrix(dist.test)
+```
+
+Great, now it's time to perform the PCoA
+
+```{r}
+pcoa.test <- pcoa(dist.test, correction = "cailliez") # note here I am adding the argument correction = "cailliez" to correct for negative eigenvalues
+
+class(pcoa.test)
+
+biplot.pcoa(pcoa.test)
+```
+
+
+We can extract the % variance explained by each axis from the `$values` dataframe. Check out the `Rel_corr_eig` and the `Cum_corr_eig` columns.
+
+```{r}
+pcoa.test$values
+```
+
+So the first axis explains 36.2% variance and the second explains 29.4% variance, which gives us a cummulative 65.6% variance explained by these 2 axes. Not bad!
+
+Now let's try with the NMDS
+
+```{r}
+set.seed(12345)
+NMDS <- metaMDS(dist.test, k = 2)
+```
+
+```{r}
+stressplot(NMDS)
+```
+
+
+```{r}
+plot(NMDS, type = "t")
+```
+
+In this case, both methods show the same patterns: we might have 4 groups in our data, species 8,1 and 2 group together, species 3 and 6 group together, species 5 and 7 group together and species 4 is slightly outside the rest.
+
+In this example, we only had 4 missing values in our dataset but sometimes you might have more. Let's see how we can deal with this.
+
+---------------------------------------------------------------------------
+
+# Missing data, imputatiom methods
+
+When we have data matrices with low amounts of missing data, we might be able to impute these missing values.
+
+Here I will show you one simple method, imputation by PCA.
+
+First, I will create an artificial dataset with random missing values
+
+```{r}
+data.missing <- iris[,-5] %>% as.matrix()
+```
+
+Now randomly create missing values
+
+```{r}
+data.missing[sample(seq_along(data.missing), .1*length(data.missing))] <- NA
+
+head(data.missing)
+
+paste(sum(is.na(data.missing)) / (nrow(data.missing) * ncol(data.missing))*100, "% missing data")
+```
+
+Ok now we can try and impute those missing values
+
+```{r}
+
+estim_all.q<-estim_ncpPCA(data.missing, ncp.min = 0, ncp.max = 14, scale = TRUE, 
+                          method.cv ="gcv", nbsim = 100, pNA = 0.05, threshold=1e-4)
+
+impute_all.q<-imputePCA(data.missing, ncp = estim_all.q$ncp, scale = TRUE, method = "Regularized")
+
+impute.pca<-dudi.pca(impute_all.q$completeObs, scannf = F, nf = 2)
+
+fviz_pca(impute.pca)
+
+```
+
+```{r}
+Data.imputepca<-impute_all.q$completeObs
+dim(Data.imputepca)
+###missing data
+sum(is.na(Data.imputepca))/sum(is.na(Data.imputepca)+!is.na(Data.imputepca))*100
+```
+
+Great, so now we have a matrix with 0 missing values.
+Let's check how these imputed values compare with the original matrix
+
+```{r}
+x<-which(is.na(data.missing))
+
+mod<-lm(as.matrix(iris[,-5]) %>% .[x] ~ Data.imputepca[x])
+
+summary(mod)
+
+plot(as.matrix(iris[,-5]) %>% .[x] , Data.imputepca[x], xlab="original data", ylab="imputed data")
+abline(mod, col="red")
+
+```
+
+So when we compare the imputed values to the original values, we get quite a good match, with an R^2 of about 0.93. We can be quite confident that this imputation method has worked well in this case.
+
+
+--------------------------------------------------------------------------------
+
+# Clustering
+
+The next useful technique we can use is called clustering. This is basically a method used to assemble all our observations into "natural" groups.
+
+Clustering comes in two flavours:
+
+  - *Partitional* (ex: k-means, k-medoids/pam, clara)
+  - *Hierarchical* (ex: ward, UPGMA, complete-linkage)
+  
+Partitional clustering can be represented by plotting the data with an ordination (just like the PCA we made earlier) whilst hierachical clustering is best represented by a tree-like object, called a dendrogram (you can also use an ordination to represent the outcome of a hierarchical clustering if you want)
+
+We would like to know how many clusters (or species in our case) there are in this dataset.
+There are many different ways to calculate the number of clusters (denoted k), and it is sometimes very subjective to decide which one is best.
+
+Most researchers will typically try different algorithms and assess their performance before choosing the one that best fits the data (or their story for that matter). 
+Typically the "silhouette width" or "within sum of squares" (wss) is quite common to assess the performance.
+
+One nice package to look into this is `NbClust`.
+
+`NbClust` allows us to compute multiple indices to assess the score of our algorithm.
+for more info, check out the instructions for this package [here](https://www.rdocumentation.org/packages/NbClust/versions/3.0.1/topics/NbClust).
+
+First, let's try using a partitional framework with the k-means algorithm.
+
+```{r}
+library(NbClust)
+
+clust.iris <- NbClust(scaled.iris[,-5], method = "kmeans")
+```
+
+The output is quite lengthy, but basically this is telling us that among multiple indices for calculating the best number of clusters, it seems like k=2 is the most frequent best solutions.
+
+The function also provides us with the assignments that we can plot back onto our data.
+
+
+```{r}
+# Create a new object with the assignements provided by the nbclust function
+iris2 <- iris %>% mutate(nbclust = clust.iris$Best.partition)
+
+# Now visuzalize it
+fviz_pca(pca.iris, habillage=iris2$nbclust)
+```
+
+Interesting. We can see our two large groups and maybe a couple of outliers. Let see what the k-means algorithm does when we tell it manually to find 3 clusters
+
+```{r}
+k3.iris <- kmeans(x = scaled.iris[,-5], centers = 3)
+
+iris2$k3 <- k3.iris$cluster
+
+fviz_pca(pca.iris, habillage=iris2$k3)
+```
+
+
+Try to compare with the first PCA plot you made using the `Species` label. Can you see any differences?
+
+Let's check how our k-means algorithm performs when compared to the original species assignments. This is called a "confusion matrix".
+
+```{r}
+iris2 %>% dplyr::select(Species, k3) %>% table()
+```
+
+When we look at how the kmeans algorithm did compared to the real Species data, we can see that all the _I.setosa_ were correctly classified (group2) but that versicolor and virginica were a bit mixed up. If we count all the individuals that were correctly classified, the algorithm give us about 83% success rate ((50+39+36)/150).
+
+What if we look at a different algorithm, this time using a hierarchical framework with Ward's algorithm.
+
+```{r}
+# Note here I am not using the scaled data
+# Try using scaled.iris instead and see what happens
+hclust.iris <- NbClust(iris[,-5], method = "ward.D")
+```
+
+We see that when using Ward's algorithm, the best number of clusters appears to be 3.
+
+What is the overall performance?
+
+```{r}
+iris2$hclust <- hclust.iris$Best.partition
+iris2 %>% dplyr::select(Species, hclust) %>% table()
+```
+
+
+We can see that the clustering algorithm got all the _I.setosa_ species correctly (they were quite obvious), all the _I.versicolor_ species correctly, but for _I.virginica_, the algorithm split it up between cluster 2 and 3.
+
+That's a slight improvement on our previous clustering, with a success rate of about 90%.
+
+
+
+--------------------------------------------------------------------------------
+
+# Dendrograms
+
+Hierachical clustering is nice to visualize using a tree-like object called a dendrogram.
+
+I borrowed the next piece of code from a cool vignette with the `dendextend` package [here](https://cran.r-project.org/web/packages/dendextend/vignettes/Cluster_Analysis.html)
+
+```{r}
+iris_species <- levels(iris[,5])
+# recreate the hierarchical cluster
+hclust.iris <- hclust(dist(iris[,-5]), method = "ward.D")
+
+dend <- as.dendrogram(hclust.iris)
+
+# Color the branches based on the clusters:
+dend <- color_branches(dend, k=3) #, groupLabels=iris_species)
+
+# Manually match the labels, as much as possible, to the real classification of the flowers:
+labels_colors(dend) <-
+   rainbow_hcl(3)[sort_levels_values(
+      as.numeric(iris[,5])[order.dendrogram(dend)]
+   )]
+
+# We shall add the flower type to the labels:
+labels(dend) <- paste(as.character(iris[,5])[order.dendrogram(dend)],
+                           "(",labels(dend),")", 
+                           sep = "")
+
+# We hang the dendrogram a bit:
+dend <- hang.dendrogram(dend,hang_height=0.1)
+
+# reduce the size of the labels:
+dend <- assign_values_to_leaves_nodePar(dend, 0.5, "lab.cex")
+dend <- set(dend, "labels_cex", 0.7)
+
+# And plot:
+par(mar = c(3,7,3,7))
+plot(dend, 
+     main = "Clustering of the Iris data using Ward's algorithm", 
+     horiz =  TRUE)
+```
+
+
+This is showing us the structure of our hierarchical classification. We can see that some versicolor specimens are missclassified. These are the 14 specimens we found with the `NbClust` function.
+
+--------------------------------------------------------------------------------
+
+# Model based clustering
+
+An issue with using hierarchical or partitional clustering methods is that they don't incorporate a measure of probability or uncertainty in the cluster assignments. Instead, they rely on a heuristic (like the mean, median or variance between clusters).
+
+A nice paper that highlights this is by [Cadena et al., 2018](https://academic.oup.com/sysbio/article/67/2/181/4102004).
+
+Let's look at one of their nice figures.
+
+```{r, echo=F}
+knitr::include_graphics("Cadena.2018.Fig1.jpeg")
+```
+
+If you imagine that each triangle is a specimen laid out in front of you, and that the size of the triangle represent a given morphological trait you would probably say that it's a single species that varies continuously.
+
+But if we look at the distribution of this data, this is what it looks like
+
+```{r, echo=F}
+knitr::include_graphics("Cadena.2018.Fig1_C.jpeg")
+```
+
+Now it seems quite obvious that something is happening here. If it were a single species, you might expect to find a normal distribution of the data.
+
+So how should we deal with this?
+
+Well, one method suggested in the paper is to use model based clustering.
+
+The package `mclust` uses Normal Mixture Models (NMMs) fitted by expectation maximization (EM). Check out their vignette [here](https://cran.r-project.org/web/packages/mclust/vignettes/mclust.html)
+
+We will fit 2 models:
+
+  - The first one we will let the model decide by itself how many clusters are in the data
+  - The second model we will tell it that we think there are 3 clusters.
+
+```{r}
+mb = Mclust(iris[,-5], verbose = F)
+
+#or specify number of clusters
+mb3 = Mclust(iris[,-5], 3, verbose = F)
+
+# optimal number of cluster
+paste("Best number of clusters", mb$G)
+```
+
+It seems like when we leave to model to decide how many clusters are in the data, the best score is k=2.
+
+```{r}
+mb$BIC %>% plot
+```
+
+Let's check how well this classification did.
+
+```{r}
+# Using k=2
+table(iris$Species, mb$classification)
+# vs using k=3
+table(iris$Species, mb3$classification)
+```
+
+When the model chose k=2, we can see that all versicolor and virginica specimens were grouped together.
+
+When we told the model to chose k=3, the model returns different assignments than when we used the nbclust function. We can see that here only 5 versicolor specimens were missclassified, as opposed to 14 virginica when we used the `NbClust` function. That's about 96.6% success rate. Quite an improvement!
+
+We can see that it can be quite useful to combine these two packages.
+
+`mclust` gives us an output of probability of belonging to a certain cluster.
+We could check which individuals are the most problematic to classify.
+
+```{r}
+# First I select only the versicolor specimens that are between rows 51 and 100
+# Then turn it into a data.frame
+# Round the digits to 2 decimal places
+# filter out those that have a higher probability of belonging to the third cluster (X3) 
+# then add 50 because we started counting from 51 onwards
+
+mb3$z[51:100,] %>% data.frame %>% round(2) %>% with(which((X3 > 0.5))) + 50
+```
+
+These are the five individuals that are causing trouble. We could go back to our herbarium specimens and check them out again to see if we hadn't missidentified them.
+
+
+--------------------------------------------------------------------------------
+
+# Linear Discriminant Analysis (LDA)
+
+Ok now let's say we are relatively confident with our species assignments. We've looked at lots of specimens and put a name on them. In the previous exercices, we fed our data into some algorithms and we asked the computer to decide for us which samples should group together. This is called unsupervised classification.
+
+Now it's time to reverse the engine and tell the computer which are the groups and then ask what are the characters in the data that can help us in delineating the groups.
+
+This is what LDA helps us do. It uses our species assignements to look into our data and find the variables that contribute the most to separating out the species, or in mathematical terms, the variables that contribute the most variance across groups. This is a form of supervised classification, or in other words, machine learning.
+
+```{r}
+# LDA requires scaled and centered data, just like PCA
+# Unlike PCA however, LDA doesn't deal well with correlated variables
+# If you had a dataset with many correlated variables, you might want to reduce the number of variables before performing the LDA
+
+lda.iris <- lda(Species ~ ., data=scaled.iris)
+
+lda.iris
+```
+
+Ok now let's see what this looks like when we plot it.
+
+```{r}
+lda.data <- cbind(scaled.iris, predict(lda.iris)$x)
+ggplot(lda.data, aes(x=LD1, y=LD2, shape= Species)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_point(aes(color = Species)) +
+  theme_classic()
+
+```
+
+Nice, now we can see that the LDA has worked quite well. It splits out nicely all three species, even though some individuals are still in between groups.
+
+What was the success rate?
+
+```{r}
+# Classification of the objects based on the LDA
+spe.class <- predict(lda.iris)$class
+
+# Posterior probabilities that the objects belong to those
+# groups
+spe.post <- predict(lda.iris)$posterior
+
+# Table of prior vs. predicted classifications
+table(iris$Species, spe.class)
+```
+
+This time, only one versicolor and 2 virginica were missclassified. That's a 98% success rate overall.
+
+## *Bonus*
+
+We can use the `mclust` package to perform a discriminant analysis.
+
+```{r}
+model.da <- MclustDA(data = iris, class = iris$Species, verbose=F)
+summary(model.da)
+```
+
+If we feed all the data to this model, it manages to correctly identify all our specimens.
+
+Now what if we trained the model on a subset of our data. Would it then be able to predict accurately the samples that were not included in the training?
+
+Usually when testing model performance, we tend to aim for a 80% training data and 20% testing data.
+
+```{r}
+# 80% of 150 is 120
+set.seed(54321)
+n <- sample(nrow(iris),nrow(iris)*0.8, replace = F) %>% sort()
+
+train <- iris[n,]
+#test  <- iris[!paste(rownames(iris)) %in% paste(rownames(train)),]
+test <- iris[-n,]
+
+model.da2 <- MclustDA(train, train$Species, verbose=F)
+summary(model.da2)
+```
+
+Model performance appears to be fine, with 0 classification errors.
+
+Now let's looks at the performance on the testing data
+
+```{r}
+summary(model.da2, newdata=test[,-5], newclass=test$Species)
+```
+
+When we train the model on only 120 samples instead of 150 and we then try to predict the remaining 30 samples, the error rate is about 10%, with 3 samples missclassified (when I set the seed to 54321). Try changing the seed and see what happens. Can you explain the difference?
+
+--------------------------------------------------------------------------------
+
+
+# Classification and Regression Trees (CART)
+
+LDA is a parametric method. However, our data might not always follow the assumptions required to run LDA. This is when CART comes in handy. It's also very easy to interpret.
+
+Wouldn't it be nice if when writing your revision for the group, you could get clear idea of what features are best used to separate your groups?
+
+```{r}
+fit <- rpart(Species~., data=iris)
+fit
+```
+
+
+```{r ,error=F, warning=F}
+rpart.plot::rpart.plot(fit)
+```
+
+Here we can see that the first split uses the length of the petal. This allows us to get all the _I.setosa_ sorted out with no misstakes. 
+
+Then the second split uses petal width to separate _I.versicolor_ from _I.virginica_ we can see that it's not a perfect fit because there are some individuals in both categories that get missclassified, but it's not too bad. 
+
+The big issue with CART is that it uses only one character at a time to make splits, and it will not re-use that same character later down the line.
+
+--------------------------------------------------------------------------------
+
+# Additional ressources
+
+There are plenty of website out there with tutorials on how to perform different tasks in R.
+
+Some of my favourites include 
+
+  - Alboukadel Kassambara and his excellent [STHDA](http://www.sthda.com/english/) and [Datanovia](https://www.datanovia.com/en/blog/types-of-clustering-methods-overview-and-quick-start-r-code/) websites
+
+  - This website from the [Quebec Centre for Biodiversity Science](https://r.qcbs.ca/workshops/) which is slightly more orientated towards community ecology but the same principles apply.
+
+  - [David Zeleny's website](https://www.davidzeleny.net/anadat-r/doku.php/en:start) on community ecology is fantastic.
+
+  - And also the excelent [Our Coding Club](https://ourcodingclub.github.io/tutorials) with tutorials on just about anything in R.
